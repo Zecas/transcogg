@@ -1,0 +1,105 @@
+#!/bin/sh
+#  transcogg is free software: you can redistribute it and/or modify
+#  it under the terms of the GNU General Public License as published by
+#  the Free Software Foundation, either version 2 of the License, or
+#  at your option) any later version.
+#
+#  transcogg is distributed in the hope that it will be useful,
+#  but WITHOUT ANY WARRANTY; without even the implied warranty of
+#  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+#  GNU General Public License for more details.
+#
+#  You should have received a copy of the GNU General Public License
+#  along with transcogg.  If not, see <http://www.gnu.org/licenses/>.
+#
+
+# Quality setting : at this time, you can only configure how much you want to reduce the size of your transfered files here 
+# Min -1 Max 9 
+QUALITY=$3
+
+ogg2ogg()
+{
+	out=$1
+	in="$2"
+	tmpfile=$(mktemp)
+
+	 # 'get the replaygain info if it exists'
+         vol=`ogginfo "$in" | grep REPLAYGAIN_TRACK_GAIN | awk -F= '{ print $2 }'`
+         if [ -z "$vol" ]; then vol='0.00 dB';fi
+        echo "Transcogging to $out adjusting the volume to $vol"
+
+	# 'shrink the ogg and adjust it's volume'
+	oggdec -Q -R -o - "$in" \
+	   | sox -t raw -r 44100 -s -2 -c 2 - -t raw -r 44100 -s -2 -c 2 - vol $vol \
+	   |  oggenc -q $QUALITY -Q  -r -o "$out" - 2>&1
+
+	# 'copy tags'
+	vorbiscomment -l "$in" | grep -v REPLAYGAIN_ > $tmpfile
+	vorbiscomment -w -c $tmpfile "$out"
+	rm $tmpfile
+}
+
+mp32ogg()
+{
+	out=$1
+	in=$2
+ 	tmpfile=$(mktemp)
+
+	 # 'get the replaygain info if it exists'
+	 # mp3gain doesn't append the db string
+         vol=`mp3gain -s c "$in" | grep Track | grep dB | awk -F: '{ print $2, " dB"}'`
+         if [ -z "$vol" ]; then vol='0.00 dB';fi
+        echo "Transcogging to $out adjusting the volume to $vol"
+	# 'shrink the mp3 and adjust it's volume'
+	mpg123 --stereo -r 44100 -q -s "$in" \
+	   | sox -t raw -r 44100 -s -2 -c 2 - -t raw -r 44100 -s -2 -c 2 - vol $vol \
+	   |  oggenc -q $QUALITY -Q  -r -o "$out" - 2>&1
+
+	id3info "$in" \
+         | grep -E '(TIT2)|(TPE1)|(TALB)|(TYER)|(TRCK)' \
+         | sed -e 's/^=== //' \
+               -e 's/^TIT2[^:]*: /TITLE=/' \
+               -e 's/^TPE1[^:]*: /ARTIST=/' \
+               -e 's/^TALB[^:]*: /ALBUM=/' \
+               -e 's/^TYER[^:]*: /DATE=/' \
+               -e 's/^TRCK[^:]*: /TRACKNUMBER=/' \
+         | iconv -f iso8859-1 -t utf8 \
+       > $tmpfile
+       vorbiscomment -w -c $tmpfile "$out"
+       rm $tmpfile
+}
+
+get_decoder()
+{
+    format=`file -b --mime-type "$1"`
+    case $format in
+    audio/mpeg)  echo mp32ogg;;
+    application/octet-stream)  echo mp32ogg;;
+    application/ogg)  echo ogg2ogg;;
+    *)    return 1;;
+    esac
+    return 0
+}
+
+  # help print
+  EXPECTED_ARGS=3
+  E_BADARGS=65
+  if [ $# -ne $EXPECTED_ARGS ]
+  then
+    echo "Usage: `basename $0` f d q
+	f : the file to transcode and normalize
+	d : directory where the normalised ogg goes
+	q : quality of the encoded vorbis between 0 and 9"
+    exit $E_BADARGS
+  fi
+
+  decoder=`get_decoder "$1" ` || return 1 
+  outname=`echo $1 | sed 's,^.*/\([^/]*\)$,\1,'`
+  outfile=$2/`echo $outname | sed 's,mp3,ogg,g'`
+  if [ $decoder = "mp32ogg" ]; then
+  	mp32ogg "$outfile" "$1"
+  else
+	ogg2ogg "$outfile" "$1"
+  fi
+
+
