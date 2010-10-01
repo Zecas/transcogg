@@ -17,56 +17,83 @@
 # Min -1 Max 9 
 QUALITY=$3
 
+# Make sure prerequisites are installed
+for i in mp3gain mpg123 id3info oggdec oggenc vorbiscomment flac metaflac sox
+do 
+  which $i >/dev/null 2>&1 || { 
+    echo "The program $i is not installed. You must install it to use Transcogg."
+    exit 1
+  }
+done
+
 ogg2ogg()
 {
-	out=$1
-	in="$2"
-	tmpfile=$(mktemp)
+  out=$1
+  in="$2"
+  tmpfile=$(mktemp)
 
-	 # 'get the replaygain info if it exists'
-         vol=`ogginfo "$in" | grep REPLAYGAIN_TRACK_GAIN | awk -F= '{ print $2 }'`
-         if [ -z "$vol" ]; then vol='0.00 dB';fi
-        echo "Transcogging to $out adjusting the volume to $vol"
+  # 'get the replaygain info if it exists'
+  vol=`ogginfo "$in" | grep REPLAYGAIN_TRACK_GAIN | awk -F= '{ print $2 }'`
+  if [ -z "$vol" ]; then vol='0.00 dB';fi
+  echo "Transcogging adjusting the volume to $vol"
 
-	# 'shrink the ogg and adjust it's volume'
-	oggdec -Q -R -o - "$in" \
-	   | sox -t raw -r 44100 -s -2 -c 2 - -t raw -r 44100 -s -2 -c 2 - vol $vol \
-	   |  oggenc -q $QUALITY -Q  -r -o "$out" - 2>&1
+  # 'shrink the ogg and adjust it's volume'
+  oggdec -Q -R -o - "$in" \
+      | sox -t raw -r 44100 -s -2 -c 2 - -t raw -r 44100 -s -2 -c 2 - vol $vol \
+      |  oggenc -q $QUALITY -Q  -r -o "$out" - 2>&1
 
-	# 'copy tags'
-	vorbiscomment -l "$in" | grep -v REPLAYGAIN_ > $tmpfile
-	vorbiscomment -w -c $tmpfile "$out"
-	rm $tmpfile
+  # 'copy tags'
+  vorbiscomment -l "$in" | grep -v REPLAYGAIN_ > $tmpfile
+  vorbiscomment -w -c $tmpfile "$out"
+  rm $tmpfile
 }
 
 mp32ogg()
 {
-	out=$1
-	in=$2
- 	tmpfile=$(mktemp)
+  out=$1
+  in=$2
+  tmpfile=$(mktemp)
 
-	 # 'get the replaygain info if it exists'
-	 # mp3gain doesn't append the db string
-         vol=`mp3gain -s c "$in" | grep Track | grep dB | awk -F: '{ print $2, " dB"}'`
-         if [ -z "$vol" ]; then vol='0.00 dB';fi
-        echo "Transcogging to $out adjusting the volume to $vol"
-	# 'shrink the mp3 and adjust it's volume'
-	mpg123 --stereo -r 44100 -q -s "$in" \
-	   | sox -t raw -r 44100 -s -2 -c 2 - -t raw -r 44100 -s -2 -c 2 - vol $vol \
-	   |  oggenc -q $QUALITY -Q  -r -o "$out" - 2>&1
+  # 'get the replaygain info if it exists'
+  # mp3gain doesn't append the db string
+  vol=`mp3gain -s c "$in" | grep Track | grep dB | awk -F: '{ print $2, " dB"}'`
+  if [ -z "$vol" ]; then vol='0.00 dB';fi
+  echo "Transcogging from MP3 to OGG adjusting the volume to $vol"
+  # 'shrink the mp3 and adjust it's volume'
+  mpg123 --stereo -r 44100 -q -s "$in" \
+      | sox -t raw -r 44100 -s -2 -c 2 - -t raw -r 44100 -s -2 -c 2 - vol $vol \
+      |  oggenc -q $QUALITY -Q  -r -o "$out" - 2>&1
 
-	id3info "$in" \
-         | grep -E '(TIT2)|(TPE1)|(TALB)|(TYER)|(TRCK)' \
-         | sed -e 's/^=== //' \
-               -e 's/^TIT2[^:]*: /TITLE=/' \
-               -e 's/^TPE1[^:]*: /ARTIST=/' \
-               -e 's/^TALB[^:]*: /ALBUM=/' \
-               -e 's/^TYER[^:]*: /DATE=/' \
-               -e 's/^TRCK[^:]*: /TRACKNUMBER=/' \
-         | iconv -f iso8859-1 -t utf8 \
-       > $tmpfile
-       vorbiscomment -w -c $tmpfile "$out"
-       rm $tmpfile
+  id3info "$in" \
+      | grep -E '(TIT2)|(TPE1)|(TALB)|(TYER)|(TRCK)' \
+      | sed -e 's/^=== //' \
+	    -e 's/^TIT2[^:]*: /TITLE=/' \
+	    -e 's/^TPE1[^:]*: /ARTIST=/' \
+	    -e 's/^TALB[^:]*: /ALBUM=/' \
+	    -e 's/^TYER[^:]*: /DATE=/' \
+	    -e 's/^TRCK[^:]*: /TRACKNUMBER=/' \
+      | iconv -f iso8859-1 -t utf8 \
+  > $tmpfile
+  vorbiscomment -w -c $tmpfile "$out"
+  rm $tmpfile
+}
+
+flac2ogg()
+{
+  out="$1"
+  in="$2"
+  tmpfile=$(mktemp)
+  vol=`metaflac --list "$in" | grep REPLAYGAIN_TRACK_GAIN | awk -F= '{ print $2 }'`
+  if [ -z "$vol" ]; then vol='0.00 dB';fi
+  echo "Transcogging from FLAC to OGG adjusting the volume to $vol"
+  flac -d --silent --stdout "$in" \
+      | sox -t raw -r 44100 -s -2 -c 2 - -t raw -r 44100 -s -2 -c 2 - vol $vol \
+      | oggenc -q $QUALITY -Q -r -o "$out" - 2>&1
+  metaflac --list "$in" | grep comment | grep -v REPLAYGAIN_ \
+      | grep -v -e "^.*comments: [0-99]" \
+      | sed 's/^.*\[[0-99]\]: //g' > $tmpfile
+  vorbiscomment -w -c "$tmpfile" "$out"
+  rm $tmpfile
 }
 
 get_decoder()
@@ -75,8 +102,11 @@ get_decoder()
     case $format in
     audio/mpeg)  echo mp32ogg;;
     application/octet-stream)  echo mp32ogg;;
+    audio/x-wav)  echo mp32ogg;; #some bad mp3 encoders give this mime-type
     application/ogg)  echo ogg2ogg;;
-    *)    return 1;;
+    audio/x-flac) echo flac2ogg;;
+    *)      echo "Unsupported format : $format"
+	    return 1;;
     esac
     return 0
 }
@@ -95,11 +125,23 @@ get_decoder()
 
   decoder=`get_decoder "$1" ` || return 1 
   outname=`echo $1 | sed 's,^.*/\([^/]*\)$,\1,'`
-  outfile=$2/`echo $outname | sed 's,mp3,ogg,g'`
+  outfile=$2/`echo $outname | sed 's,mp3,ogg,g'| sed 's,flac,ogg,g'`
+
+  if [ -x "$outfile" ]
+  then
+    echo "The file $outfile already exists, aborting!"
+    exit 1
+fi
+
+tmpout2=$(mktemp)
   if [ $decoder = "mp32ogg" ]; then
-  	mp32ogg "$outfile" "$1"
+  	mp32ogg "$tmpout2" "$1"
+  elif [ $decoder = "flac2ogg" ]; then
+        flac2ogg "$tmpout2" "$1"
   else
-	ogg2ogg "$outfile" "$1"
+	ogg2ogg "$tmpout2" "$1"
   fi
 
+echo "Copy of the temporary file to $outfile"
+mv "$tmpout2" "$outfile"
 
